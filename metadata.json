@@ -1,0 +1,5 @@
+{
+  "name": "Recebimento do Dia",
+  "description": "Painel de monitoramento logístico em tempo real integrado com Google Sheets para visualização em TVs e monitores.",
+  "requestFramePermissions": []
+}
