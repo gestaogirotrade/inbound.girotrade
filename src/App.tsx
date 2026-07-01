@@ -45,6 +45,7 @@ import {
   TrendingDown,
   DollarSign,
   RotateCcw,
+  RefreshCw,
   ArrowUpRight,
   ArrowDownRight,
   Percent,
@@ -53,11 +54,19 @@ import {
   Ticket,
   Activity,
   ClipboardList,
-  Forklift
+  Forklift,
+  Plus,
+  Trash2,
+  Edit,
+  Search,
+  X,
+  Calendar,
+  Building2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import ReentregaDashboard from './components/ReentregaDashboard';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -200,11 +209,6 @@ const isEmOperacao = (d: LogisticsData) => {
   const s = String(d.status || '').toUpperCase().trim();
   const isBaseTimeAlert = s === 'NOSHOW' || s === 'NO SHOW' || s === 'NO-SHOW' || s === 'RECUSADO';
   if (isBaseTimeAlert) return false;
-
-  // Se o status indica em trânsito ou planejado (NA/vazio), não pode estar em operação
-  if (s === 'EM TRÂNSITO' || s === 'EM TRANSITO' || s === 'NA' || s === '') {
-    return false;
-  }
 
   // "se tiver com ordem de recebimento e não estiver finalizada contras em Doca/ Operação"
   const ordem = String(d.ordem || '').trim();
@@ -1131,6 +1135,26 @@ const formatSupplierName = (name: string) => {
   return words.slice(0, 2).join(' ');
 };
 
+const cleanMotivo = (raw: string): string => {
+  if (!raw) return '';
+  
+  // Split by nested categories delimiters (e.g. "Entrega › Arrependimento" -> ["Entrega", "Arrependimento"])
+  const parts = raw.split(/[›\>>\-:|]/);
+  let resolved = parts[parts.length - 1].trim();
+  
+  if (!resolved && parts.length > 1) {
+    resolved = parts[parts.length - 2].trim();
+  }
+  
+  // Remove starting "entrega" prefix if still here Case-Insensitively
+  if (resolved.toLowerCase().startsWith('entrega')) {
+    resolved = resolved.replace(/^entrega\s*/i, '');
+    resolved = resolved.replace(/^[\s\-›\>\:\|\/\~]+/, '').trim();
+  }
+  
+  return resolved;
+};
+
 function DailyReportView({ 
   stats, 
   mapaData, 
@@ -1692,7 +1716,7 @@ function DailyReportView({
 }
 function DevolucaoView() {
   const [biData, setBiData] = useState<LogisticsData[]>([]);
-  const [ticketDiaData, setTicketDiaData] = useState<{ colA: string, date: string, delay: string, title?: string, desc?: string }[]>([]);
+  const [ticketDiaData, setTicketDiaData] = useState<{ colA: string, date: string, delay: string, title?: string, desc?: string, motiveG?: string, empresa?: string }[]>([]);
   const [ticketDiaAnteriorData, setTicketDiaAnteriorData] = useState<{ colA: string }[]>([]);
   const [debitoData, setDebitoData] = useState<{ date: string, value: number, carrier: string }[]>([]);
   const [gerenciadorData, setGerenciadorData] = useState<Record<string, any>>({});
@@ -1810,12 +1834,19 @@ function DevolucaoView() {
           if (dIdx === -1) dIdx = 26; // Column AA (Data de atualização)
           const lIdx = h.findIndex(s => s.includes('delay') || s.includes('atraso'));
           const rIdx = h.findIndex(s => s === 'data de resolução' || s === 'data_resolucao' || (s.includes('resolução') && s.includes('data')) || (s.includes('resolucao') && s.includes('data')));
+          let mIdx = h.findIndex(s => s === 'motivo' || s === 'motivos' || s === 'motivo de devolução' || s.includes('motivo'));
+          if (mIdx === -1) mIdx = 6; // Column G standard
+          let empIdx = h.findIndex(s => s === 'empresa' || s === 'empresas' || s.includes('empresa'));
+          if (empIdx === -1) empIdx = 12; // Column M standard
+
           setTicketDiaData(tRows.slice(1).map(c => ({
             colA: c[0] || '', 
             date: c[dIdx] || '', 
             delay: c[lIdx >= 0 ? lIdx : 16] || '0',
             title: c[2] || '',
             desc: c[3] || '',
+            motiveG: c[mIdx] || '',
+            empresa: c[empIdx] || '',
             resolvedDate: rIdx >= 0 ? (c[rIdx] || '') : ''
           })).filter(x => x.colA.trim().length >= 3 && !x.colA.includes('#') && !['false', 'true', 'id'].includes(x.colA.toLowerCase())));
         }
@@ -1952,6 +1983,7 @@ function DevolucaoView() {
     const monthNamesShort = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 
     const delayedTickets: any[] = [];
+    const withinTermTickets: any[] = [];
     ticketDiaData.forEach(t => {
       const dateKey = normalizeDate(t.date);
       if (!dateKey) return;
@@ -1962,59 +1994,67 @@ function DevolucaoView() {
       dailyEntradas[dateKey].qtd += 1;
       
       const businessDaysDelay = getBusinessDaysCount(t.date);
-      
+      const combinedText = `${t.title || ''} ${t.desc || ''} ${t.colA}`.toUpperCase();
+
+      // Find active match in biData (Basetime sheet)
+      let activeMatch = biData.find(d => {
+        if (!d.ordem || d.ordem === '-' || d.ordem === '0') return false;
+        const ord = d.ordem.trim().toUpperCase();
+        if (ord.length < 4) return false;
+        return combinedText.includes(ord);
+      });
+
+      // Find historical match in gerenciadorData (Gerenciador de ordem sheet)
+      let historicalMatch: any = null;
+      if (!activeMatch && gerenciadorData) {
+        historicalMatch = Object.values(gerenciadorData).find((g: any) => {
+          const ord = String(g.or || '').toUpperCase().trim();
+          const nf = String(g.NF || g.nf || '').toUpperCase().trim();
+          const ordMatch = ord.length >= 4 && combinedText.includes(ord);
+          const nfMatch = nf.length >= 4 && combinedText.includes(nf);
+          return ordMatch || nfMatch;
+        });
+      }
+
+      const match = activeMatch || historicalMatch;
+
+      let derivedStatus = businessDaysDelay < 6 ? 'DENTRO DO PRAZO' : 'ATRASADO';
+      let isFinished = false;
+
+      if (match) {
+        isFinished = activeMatch 
+          ? (activeMatch.status.toLowerCase().includes('finalizad') || 
+             activeMatch.status.toLowerCase().includes('concluid') || 
+             activeMatch.status === 'OK' || 
+             (activeMatch.fimConferencia && activeMatch.fimConferencia.trim() !== '' && activeMatch.fimConferencia !== '-' && activeMatch.fimConferencia !== '0'))
+          : (match.conferida === 'S' || 
+             (match.fim && match.fim.trim() !== '' && match.fim !== '-' && match.fim !== '0') || 
+             (match.mapaAlocacao && match.mapaAlocacao.trim() !== '' && match.mapaAlocacao !== '-' && match.mapaAlocacao !== '0'));
+
+        if (isFinished) {
+          derivedStatus = 'CONCLUÍDO PLANILHA';
+        } else {
+          derivedStatus = activeMatch ? (activeMatch.status || 'EM ANDAMENTO') : 'EM ANDAMENTO';
+        }
+      } else {
+        derivedStatus = businessDaysDelay < 6 ? 'DENTRO DO PRAZO' : 'SEM VÍNCULO';
+      }
+
       if (businessDaysDelay < 6) {
         dailyEntradas[dateKey].withinTerm += 1;
+        withinTermTickets.push({ 
+          ...t, 
+          businessDaysDelay,
+          formattedDate: dateKey,
+          doca: match?.doca || '---',
+          conferente: match?.conferente || '---',
+          status: derivedStatus,
+          isFinishedOnWarehouse: isFinished
+        });
       } else {
         // Exclude resolved tickets to match the active delay list
         const isResolved = (t as any).resolvedDate && (t as any).resolvedDate.trim() !== '';
         if (isResolved) return;
-
-        const combinedText = `${t.title || ''} ${t.desc || ''} ${t.colA}`.toUpperCase();
-
-        // Find active match in biData (Basetime sheet)
-        let activeMatch = biData.find(d => {
-          if (!d.ordem || d.ordem === '-' || d.ordem === '0') return false;
-          const ord = d.ordem.trim().toUpperCase();
-          if (ord.length < 4) return false;
-          return combinedText.includes(ord);
-        });
-
-        // Find historical match in gerenciadorData (Gerenciador de ordem sheet)
-        let historicalMatch: any = null;
-        if (!activeMatch && gerenciadorData) {
-          historicalMatch = Object.values(gerenciadorData).find((g: any) => {
-            const ord = String(g.or || '').toUpperCase().trim();
-            const nf = String(g.NF || g.nf || '').toUpperCase().trim();
-            const ordMatch = ord.length >= 4 && combinedText.includes(ord);
-            const nfMatch = nf.length >= 4 && combinedText.includes(nf);
-            return ordMatch || nfMatch;
-          });
-        }
-
-        const match = activeMatch || historicalMatch;
-
-        let derivedStatus = 'ATRASADO';
-        let isFinished = false;
-
-        if (match) {
-          isFinished = activeMatch 
-            ? (activeMatch.status.toLowerCase().includes('finalizad') || 
-               activeMatch.status.toLowerCase().includes('concluid') || 
-               activeMatch.status === 'OK' || 
-               (activeMatch.fimConferencia && activeMatch.fimConferencia.trim() !== '' && activeMatch.fimConferencia !== '-' && activeMatch.fimConferencia !== '0'))
-            : (match.conferida === 'S' || 
-               (match.fim && match.fim.trim() !== '' && match.fim !== '-' && match.fim !== '0') || 
-               (match.mapaAlocacao && match.mapaAlocacao.trim() !== '' && match.mapaAlocacao !== '-' && match.mapaAlocacao !== '0'));
-
-          if (isFinished) {
-            derivedStatus = 'CONCLUÍDO PLANILHA';
-          } else {
-            derivedStatus = activeMatch ? (activeMatch.status || 'EM ANDAMENTO') : 'EM ANDAMENTO';
-          }
-        } else {
-          derivedStatus = 'SEM VÍNCULO';
-        }
 
         dailyEntradas[dateKey].delayed += 1;
         delayedTickets.push({ 
@@ -2157,6 +2197,7 @@ function DevolucaoView() {
       delayedTrend,
       totalDelayed: Object.values(dailyEntradas).reduce((acc, curr) => acc + curr.delayed, 0),
       delayedTickets: delayedTickets.sort((a, b) => b.businessDaysDelay - a.businessDaysDelay),
+      withinTermTickets: withinTermTickets.sort((a, b) => b.businessDaysDelay - a.businessDaysDelay),
       eficiencia: totalEntradas > 0 ? ((totalSaidasInv / totalEntradas) * 100).toFixed(1) : '0.0',
       detalhamento: detailedList.sort((a, b) => {
         const parseDate = (d: string) => {
@@ -2333,6 +2374,53 @@ function DevolucaoView() {
                                     <div className="text-[8px] font-black text-slate-500 uppercase mt-0.5">atraso</div>
                                   </div>
                                 </div>
+                                {ticket.title && (
+                                  <div className="text-[10px] font-bold text-slate-300 uppercase tracking-tight leading-normal mt-1">{ticket.title}</div>
+                                )}
+                                {(() => {
+                                  const descText = ticket.desc || '';
+                                  if (!descText) return null;
+                                  
+                                  const rawLines = descText.split(/[\r\n]+/).map(l => l.trim()).filter(l => l.length > 0);
+                                  if (rawLines.length === 0) return null;
+
+                                  let valor = '---';
+                                  const priceRegex = /(R\$\s*\d+[\d.,]*)/i;
+                                  for (const line of rawLines) {
+                                    const match = line.match(priceRegex);
+                                    if (match) {
+                                      valor = match[1];
+                                      break;
+                                    }
+                                  }
+
+                                  const motiveLines = rawLines.filter(line => !line.match(priceRegex));
+                                  const motivo = ticket.motiveG ? cleanMotivo(ticket.motiveG) : '---';
+                                  const empresa = ticket.empresa || '---';
+
+                                  return (
+                                    <div className="bg-slate-900/60 p-2 rounded-lg border border-white/5 flex flex-col gap-1.5 text-[9px] uppercase mt-1">
+                                      <div className="flex justify-between items-start gap-2">
+                                        <div className="flex flex-col">
+                                          <span className="text-[7px] font-black text-rose-400/80 uppercase tracking-wider">Motivo</span>
+                                          <span className="text-slate-300 font-medium leading-normal">{motivo}</span>
+                                        </div>
+                                        {empresa !== '---' && (
+                                          <div className="flex flex-col text-right">
+                                            <span className="text-[7px] font-black text-rose-400/80 uppercase tracking-wider">Cliente</span>
+                                            <span className="text-slate-300 font-bold leading-normal font-mono">{empresa}</span>
+                                          </div>
+                                        )}
+                                      </div>
+                                      {valor !== '---' && (
+                                        <div className="flex justify-between items-center bg-emerald-500/10 px-1.5 py-0.5 rounded text-[8px] border border-emerald-500/10">
+                                          <span className="font-bold text-slate-400">Valor do Evento:</span>
+                                          <span className="font-extrabold text-emerald-400 font-mono">{valor}</span>
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
                                 <div className="grid grid-cols-2 gap-4 pt-2 border-t border-white/5">
                                   <div className="flex items-center gap-2">
                                     <Clock className="w-3 h-3 text-slate-500" />
@@ -2500,37 +2588,40 @@ function DevolucaoView() {
             
             <div className="max-h-[680px] overflow-y-auto custom-scrollbar pr-2 flex flex-col gap-4">
               {dashboardData.detalhamento.map((item, idx) => {
-                const isDelayed = item.status === 'ATRASADO';
-                const isExpanded = isDelayed && !!expandedDates[item.rawDate];
-                const ticketsForThisDate = isDelayed ? dashboardData.delayedTickets.filter(t => t.formattedDate === item.rawDate) : [];
+                const compositeKey = `${item.rawDate}_${item.status}`;
+                const isExpanded = !!expandedDates[compositeKey];
+                const ticketsForThisDate = item.status === 'ATRASADO'
+                  ? dashboardData.delayedTickets.filter(t => t.formattedDate === item.rawDate)
+                  : dashboardData.withinTermTickets.filter(t => t.formattedDate === item.rawDate);
 
                 return (
                   <div key={idx} className="flex flex-col gap-2">
                     <div 
                       onClick={() => {
-                        if (isDelayed) {
-                          setExpandedDates(prev => ({ ...prev, [item.rawDate]: !prev[item.rawDate] }));
-                        }
+                        setExpandedDates(prev => ({ ...prev, [compositeKey]: !prev[compositeKey] }));
                       }}
                       className={cn(
-                        "bg-slate-900/40 border border-white/5 rounded-2xl p-5 flex items-center justify-between transition-all duration-200 group/row",
-                        isDelayed ? "cursor-pointer hover:bg-slate-800/40" : "",
-                        isExpanded ? "border-rose-500/30 bg-rose-950/10" : ""
+                        "bg-slate-900/40 border border-white/5 rounded-2xl p-5 flex items-center justify-between transition-all duration-200 group/row cursor-pointer hover:bg-slate-800/40",
+                        isExpanded 
+                          ? item.status === 'ATRASADO'
+                            ? "border-rose-500/30 bg-rose-950/10" 
+                            : "border-blue-500/30 bg-blue-950/10"
+                          : ""
                       )}
                     >
                       <div className="w-1/3 flex items-center gap-2">
-                        {isDelayed && (
-                          <motion.div
-                            animate={{ rotate: isExpanded ? 180 : 0 }}
-                            transition={{ duration: 0.2 }}
-                            className="flex items-center justify-center text-slate-400 group-hover/row:text-rose-400"
-                          >
-                            <ChevronDown className="w-4 h-4" />
-                          </motion.div>
-                        )}
+                        <motion.div
+                          animate={{ rotate: isExpanded ? 180 : 0 }}
+                          transition={{ duration: 0.2 }}
+                          className={cn(
+                            "flex items-center justify-center text-slate-400",
+                            item.status === 'ATRASADO' ? "group-hover/row:text-rose-400" : "group-hover/row:text-blue-400"
+                          )}
+                        >
+                          <ChevronDown className="w-4 h-4" />
+                        </motion.div>
                         <div className={cn(
-                          "text-[14px] font-black font-mono transition-colors", 
-                          isDelayed ? "text-rose-200 group-hover/row:text-white" : "text-slate-300 group-hover/row:text-white"
+                          "text-[14px] font-black font-mono transition-colors text-slate-300 group-hover/row:text-white"
                         )}>
                           {item.date}
                         </div>
@@ -2539,9 +2630,9 @@ function DevolucaoView() {
                       <div className="w-1/3 flex justify-center">
                         <div className={cn(
                           "flex items-center gap-2 px-5 py-1.5 rounded-full text-[11px] font-black uppercase tracking-tight",
-                          isDelayed ? 'text-rose-500 bg-rose-500/5' : 'text-emerald-500 bg-emerald-500/5'
+                          item.status === 'ATRASADO' ? 'text-rose-500 bg-rose-500/5' : 'text-emerald-500 bg-emerald-500/5'
                         )}>
-                          {isDelayed ? <AlertCircle className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
+                          {item.status === 'ATRASADO' ? <AlertCircle className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
                           {item.status}
                         </div>
                       </div>
@@ -2560,44 +2651,84 @@ function DevolucaoView() {
                           className="overflow-hidden"
                         >
                           <div className="bg-slate-950/60 border border-white/5 rounded-2xl p-4 flex flex-col gap-3 ml-4">
-                            <div className="text-[10px] font-black text-rose-400 uppercase tracking-widest border-b border-white/5 pb-2 mb-1">
-                              Lista de Ocorrências Atrasadas ({ticketsForThisDate.length})
+                            <div className={cn(
+                              "text-[10px] font-black uppercase tracking-widest border-b border-white/5 pb-2 mb-1",
+                              item.status === 'ATRASADO' ? "text-rose-400" : "text-blue-400"
+                            )}>
+                              {item.status === 'ATRASADO' ? 'Lista de Ocorrências Atrasadas' : 'Lista de Ocorrências no Prazo'} ({ticketsForThisDate.length})
                             </div>
                             <div className="flex flex-col gap-2.5 max-h-[300px] overflow-y-auto custom-scrollbar pr-1">
                               {ticketsForThisDate.length > 0 ? (
-                                ticketsForThisDate.map((t, tIdx) => (
-                                  <div key={tIdx} className="bg-white/5 border border-white/5 hover:border-slate-700/50 hover:bg-white/10 transition-colors p-3 rounded-xl flex flex-col gap-2 text-left">
-                                    <div className="flex justify-between items-start gap-2">
-                                      <span className="text-[11px] font-mono font-black text-slate-200 uppercase tracking-wider">{t.colA}</span>
-                                      <div className="flex items-center gap-1.5 flex-wrap justify-end">
-                                        <span className="text-[9px] font-black text-rose-400 bg-rose-400/5 px-2 py-0.5 rounded-full font-mono uppercase">
-                                          {t.businessDaysDelay}d atraso
-                                        </span>
-                                        <span className={cn(
-                                          "text-[9px] font-black px-2 py-0.5 rounded-full uppercase",
-                                          t.status.includes('CONCLUÍDO') ? "text-emerald-400 bg-emerald-400/10" : "text-yellow-400 bg-yellow-400/15"
-                                        )}>
-                                          {t.status}
-                                        </span>
+                                ticketsForThisDate.map((t, tIdx) => {
+                                  const descText = t.desc || '';
+                                  const rawLines = descText ? descText.split(/[\r\n]+/).map(l => l.trim()).filter(l => l.length > 0) : [];
+                                  
+                                  let valor = '---';
+                                  const priceRegex = /(R\$\s*\d+[\d.,]*)/i;
+                                  for (const line of rawLines) {
+                                    const match = line.match(priceRegex);
+                                    if (match) {
+                                      valor = match[1];
+                                      break;
+                                    }
+                                  }
+
+                                  const motivo = t.motiveG ? cleanMotivo(t.motiveG) : '---';
+                                  const empresa = t.empresa || '---';
+                                  
+                                  const itemLine = rawLines.find(l => l.toLowerCase().includes('item:') || l.toLowerCase().includes('produto'));
+                                  const qtyLine = rawLines.find(l => l.toLowerCase().includes('caixa') || l.toLowerCase().includes('unidade') || l.toLowerCase().includes('qtd') || l.toLowerCase().includes('quantidade'));
+
+                                  return (
+                                    <div key={tIdx} className="bg-white/5 border border-white/5 hover:border-slate-700/50 hover:bg-white/10 transition-colors p-3 rounded-xl flex flex-col gap-2 text-left">
+                                      {empresa !== '---' && (
+                                        <div className="flex flex-col items-center justify-center text-center pb-2 border-b border-white/5 w-full gap-0.5">
+                                          <span className="text-[7.5px] font-black text-rose-400 uppercase tracking-widest">Cliente</span>
+                                          <span className="text-[11px] font-extrabold text-white tracking-wide font-mono uppercase">{empresa}</span>
+                                        </div>
+                                      )}
+
+                                      <div className="mt-1 text-left flex flex-col gap-2 bg-slate-900/60 p-2.5 rounded-lg border border-white/5">
+                                        <div className="flex flex-col gap-0.5">
+                                          <span className="text-[7.5px] font-black text-rose-400 uppercase tracking-widest">Motivo</span>
+                                          <p className="text-[10px] font-medium text-slate-200 leading-normal uppercase">
+                                            {motivo}
+                                          </p>
+                                        </div>
+
+                                        {(itemLine || qtyLine) && (
+                                          <div className="flex flex-col gap-1 bg-white/5 p-1.5 rounded border border-white/5">
+                                            {itemLine && (
+                                              <div className="flex flex-col">
+                                                <span className="text-[7.5px] font-black text-slate-500 uppercase tracking-wider">Item / Produto</span>
+                                                <span className="text-[9px] font-bold text-slate-300 uppercase tracking-tight leading-tight">
+                                                  {itemLine.replace(/item:\s*/i, '')}
+                                                </span>
+                                              </div>
+                                            )}
+                                            {qtyLine && (
+                                              <div className="flex items-center gap-1.5 mt-0.5">
+                                                <span className="text-[7.5px] font-black text-slate-500 uppercase tracking-wider">Qtd:</span>
+                                                <span className="text-[8.5px] font-bold text-slate-300 uppercase font-mono">
+                                                  {qtyLine.replace(/quantidade:\s*/i, '').replace(/qtd:\s*/i, '')}
+                                                </span>
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
+
+                                        <div className="flex items-center justify-between gap-2 bg-emerald-500/10 px-2 py-1 rounded border border-emerald-500/10">
+                                          <span className="text-[7.5px] font-black text-slate-400 uppercase tracking-wider">Valor do Evento</span>
+                                          <span className="text-[10px] font-black font-mono text-emerald-400">
+                                            {valor}
+                                          </span>
+                                        </div>
                                       </div>
                                     </div>
-                                    {t.title && (
-                                      <div className="text-[10px] font-bold text-slate-300 uppercase tracking-tight line-clamp-1 leading-snug">{t.title}</div>
-                                    )}
-                                    <div className="grid grid-cols-2 gap-2 mt-1 pt-2 border-t border-white/5 text-[9px] font-bold uppercase tracking-wider text-slate-500">
-                                      <div className="flex flex-col">
-                                        <span className="text-[8px] font-black text-slate-600">Doca</span>
-                                        <span className="font-mono text-slate-300">{t.doca}</span>
-                                      </div>
-                                      <div className="flex flex-col">
-                                        <span className="text-[8px] font-black text-slate-600">Conferente</span>
-                                        <span className="font-mono text-slate-300 truncate">{t.conferente}</span>
-                                      </div>
-                                    </div>
-                                  </div>
-                                ))
+                                  );
+                                })
                               ) : (
-                                <div className="text-[10px] text-slate-500 italic text-center py-4 uppercase">Sem ocorrências ativas ou pendentes encontradas</div>
+                                <div className="text-[10px] text-slate-500 italic text-center py-4 uppercase">Sem ocorrências correspondentes encontradas</div>
                               )}
                             </div>
                           </div>
@@ -2632,6 +2763,16 @@ function DevolucaoView() {
   );
 }
 
+function ReentregaView() {
+  return <ReentregaDashboard />;
+}
+
+function DummyOldReentregaView() {
+  return null;
+}
+
+
+
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
     return localStorage.getItem('giro_auth') === 'true';
@@ -2645,7 +2786,7 @@ export default function App() {
     const today = new Date();
     return `${today.getDate().toString().padStart(2, '0')}/${(today.getMonth() + 1).toString().padStart(2, '0')}`;
   });
-  const [view, setView] = useState<'dashboard' | 'reports' | 'bi' | 'devolucao' | 'analytics' | 'daily_report' | 'cross_reference'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'reports' | 'bi' | 'devolucao' | 'analytics' | 'daily_report' | 'cross_reference' | 'reentrega'>('dashboard');
   const [tvMode, setTvMode] = useState(false);
   const [mapaData, setMapaData] = useState<Record<string, { pallets: number, empty: number, total: number }>>({});
   const [operadoresData, setOperadoresData] = useState<Record<string, Record<string, number>>>({});
@@ -3682,6 +3823,24 @@ export default function App() {
             {!isSidebarCollapsed && <span className="relative z-10">DEVOLUÇÃO</span>}
           </button>
           <button 
+            onClick={() => setView('reentrega')}
+            className={cn(
+              "w-full px-6 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all relative overflow-hidden text-left flex items-center gap-3",
+              view === 'reentrega' ? "text-white" : "text-slate-500 hover:text-slate-300",
+              isSidebarCollapsed && "px-0 flex justify-center"
+            )}
+          >
+            {view === 'reentrega' && (
+              <motion.div 
+                layoutId="navTab" 
+                className="absolute inset-0 bg-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)]"
+                transition={{ type: "spring", bounce: 0.2, duration: 0.6 }}
+              />
+            )}
+            <RefreshCw className={cn("w-4 h-4 relative z-10 shrink-0", view === 'reentrega' ? "text-white" : "text-slate-500")} />
+            {!isSidebarCollapsed && <span className="relative z-10">REENTREGA</span>}
+          </button>
+          <button 
             onClick={() => setView('daily_report')}
             className={cn(
               "w-full px-6 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all relative overflow-hidden text-left flex items-center gap-3",
@@ -4248,6 +4407,8 @@ export default function App() {
             pendingLots={pendingLots}
             pendingLoading={pendingLoading}
           />
+        ) : view === 'reentrega' ? (
+          <ReentregaView />
         ) : (
           <DevolucaoView />
         )}
