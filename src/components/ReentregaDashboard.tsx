@@ -34,6 +34,7 @@ import {
   Clock,
   ClipboardList,
   User,
+  DollarSign,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
@@ -47,7 +48,15 @@ const SHEET_ID = '1kgo_BrjuyPp5zxOGaJJfucd6t9fdufE8KF2Po-aCkGk';
 
 // Helper to format currency
 const formatBRL = (value: number | string) => {
-  const num = typeof value === 'number' ? value : parseFloat(String(value).replace(',', '.'));
+  if (typeof value === 'number') {
+    return value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  }
+  let clean = String(value).replace('R$', '').replace(/\s/g, '').trim();
+  if (clean.includes(',') && clean.includes('.')) {
+    clean = clean.replace(/\./g, '');
+  }
+  clean = clean.replace(',', '.');
+  const num = parseFloat(clean);
   if (isNaN(num)) return 'R$ 0,00';
   return num.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 };
@@ -171,7 +180,7 @@ export default function ReentregaDashboard() {
 
   // New Form states for the new dimensions
   const [formMercadoriaDevolvidaCD, setFormMercadoriaDevolvidaCD] = useState('Sim');
-  const [formStatusExpedicao, setFormStatusExpedicao] = useState('Aguardando Programação');
+  const [formStatusExpedicao, setFormStatusExpedicao] = useState('Aguardando Expedição');
   const [formNovaTransportadora, setFormNovaTransportadora] = useState('');
   const [formPrevisaoReentrega, setFormPrevisaoReentrega] = useState('');
   const [formTratativa, setFormTratativa] = useState('');
@@ -260,7 +269,7 @@ export default function ReentregaDashboard() {
       setErrorObj(null);
       
       const sheetId = SHEET_ID;
-      const url1 = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=480965236`;
+      const url1 = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=402608498`;
       const url2 = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&sheet=Renntregaa`;
       const cacheBuster = `&t=${new Date().getTime()}`;
 
@@ -457,7 +466,13 @@ export default function ReentregaDashboard() {
 
         // Volumes & values from lookup or defaults
         const extra = valueMap.get(nfVal);
-        const cleanVal = extra ? extra.valor.replace('R$', '').trim() : '0,00';
+        let cleanVal = '0,00';
+        const valorAC = row[28] !== undefined ? row[28].trim() : '';
+        if (valorAC) {
+          cleanVal = valorAC.replace('R$', '').trim();
+        } else {
+          cleanVal = extra ? extra.valor.replace('R$', '').trim() : '0,00';
+        }
         let parsedVolumes = 1;
         if (extra && extra.peso) {
           parsedVolumes = Math.max(1, Math.round(parseFloat(extra.peso.replace(',', '.')))) || 1;
@@ -624,7 +639,7 @@ export default function ReentregaDashboard() {
     
     // Set default new fields
     setFormMercadoriaDevolvidaCD('Sim');
-    setFormStatusExpedicao('Aguardando Programação');
+    setFormStatusExpedicao('Aguardando Expedição');
     setFormNovaTransportadora('');
     setFormPrevisaoReentrega('');
     setFormTratativa('');
@@ -657,7 +672,8 @@ export default function ReentregaDashboard() {
     
     // Set edit values
     setFormMercadoriaDevolvidaCD(item.mercadoriaDevolvidaCD || 'Sim');
-    setFormStatusExpedicao(item.statusExpedicao || 'Aguardando Programação');
+    const initialStatusExp = item.statusExpedicao || 'Aguardando Expedição';
+    setFormStatusExpedicao(initialStatusExp === 'Aguardando Programação' ? 'Aguardando Expedição' : initialStatusExp);
     setFormNovaTransportadora(item.novaTransportadora || item.transportadora || '');
     setFormPrevisaoReentrega(item.previsaoReentrega || '');
     setFormTratativa(item.tratativa || '');
@@ -935,6 +951,48 @@ export default function ReentregaDashboard() {
       }
     });
     return uniqueIds.size;
+  }, [filteredData]);
+
+  // Valor total de todas as notas que estão pendentes no CD
+  const valorTotalPendenteCD = useMemo(() => {
+    let sum = 0;
+    const seenIds = new Set<string>();
+    filteredData.forEach(item => {
+      // Puxa da coluna Mercadoria devolvida no CD todos que estão com 'Sim' ou 'S'
+      const dev = (item.mercadoriaDevolvidaCD || '').trim().toLowerCase();
+      const isSim = dev === 'sim' || dev === 's' || dev.startsWith('sim') || dev.startsWith('s');
+      if (!isSim) return;
+
+      const statusFinal = (item.statusFinalReentrega || '').trim();
+      const statusFinalLower = statusFinal.toLowerCase();
+
+      // É pendente se a coluna Status Final estiver vazia, "Aguardando Programação", ou "Aguardando Roteirização"
+      const isPending = 
+        statusFinal === '' || 
+        statusFinalLower.includes('aguardando') || 
+        statusFinalLower.includes('program') || 
+        statusFinalLower.includes('roteir') || 
+        statusFinalLower.includes('roter');
+
+      if (isPending) {
+        const tktId = (item.id || '').trim();
+        if (tktId) {
+          if (seenIds.has(tktId)) return;
+          seenIds.add(tktId);
+        }
+        
+        let clean = String(item.valor || '0,00').replace('R$', '').replace(/\s/g, '').trim();
+        if (clean.includes(',') && clean.includes('.')) {
+          clean = clean.replace(/\./g, '');
+        }
+        clean = clean.replace(',', '.');
+        const num = parseFloat(clean);
+        if (!isNaN(num)) {
+          sum += num;
+        }
+      }
+    });
+    return sum;
   }, [filteredData]);
 
   // 2. Card 2 (Aguardando Programação)
@@ -1321,13 +1379,42 @@ export default function ReentregaDashboard() {
   // Detalhamento de Reentrega using Date from Column V (only those filled)
   const detalhamentoReentrega = useMemo(() => {
     const groups: Record<string, { date: string, rawDate: string, status: string, total: number, items: ReentregaItem[] }> = {};
+    const seenIds = new Set<string>();
 
     filteredData.forEach(item => {
-      const dateStr = item.dataColunaV?.trim() || '';
-      if (!dateStr) return; // Only process items with a date in Column V
+      // 1. Only include what is in "Total Pendente no CD"
+      const dev = (item.mercadoriaDevolvidaCD || '').trim().toLowerCase();
+      const isSim = dev === 'sim' || dev === 's' || dev.startsWith('sim') || dev.startsWith('s');
+      if (!isSim) return;
+
+      const statusFinal = (item.statusFinalReentrega || '').trim();
+      const statusFinalLower = statusFinal.toLowerCase();
+
+      const isPending = 
+        statusFinal === '' || 
+        statusFinalLower.includes('aguardando') || 
+        statusFinalLower.includes('program') || 
+        statusFinalLower.includes('roteir') || 
+        statusFinalLower.includes('roter');
+
+      if (!isPending) return;
+
+      // Deduplicate by ticket ID to match the Total Pendente card exactly
+      const tktId = (item.id || '').trim();
+      if (tktId) {
+        if (seenIds.has(tktId)) return;
+        seenIds.add(tktId);
+      }
+
+      // 2. Use date from Column V (fallback to item date if empty)
+      let dateStr = item.dataColunaV?.trim() || '';
+      if (!dateStr) {
+        dateStr = item.date?.trim() || '';
+      }
+      if (!dateStr) return;
 
       const formattedDate = formatColumnVDate(dateStr);
-      const statusStr = item.status || 'Aguardando Expedição';
+      const statusStr = 'Aguardando Programação';
       
       const key = `${formattedDate}_${statusStr}`;
       if (!groups[key]) {
@@ -1566,7 +1653,7 @@ export default function ReentregaDashboard() {
       {/* FIRST LINE - GENERAL VOLUMES VISION (3 Scorecard Components) */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {/* Card 1: Total Pendente no CD */}
-        <div className="bg-[#05070e]/80 hover:bg-[#070b16]/90 border border-rose-500/15 rounded-2xl p-5 flex flex-col justify-between shadow-lg transition duration-200 relative overflow-hidden group min-h-[120px] tech-border">
+        <div className="bg-[#05070e]/80 hover:bg-[#070b16]/90 border border-rose-500/15 rounded-2xl p-5 flex flex-col justify-between shadow-lg transition duration-200 relative overflow-hidden group min-h-[100px] tech-border">
           <div className="flex items-center justify-between">
             <span className="text-[9px] font-black text-rose-400 uppercase tracking-widest font-sans flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
@@ -1579,14 +1666,10 @@ export default function ReentregaDashboard() {
             </span>
             <span className="text-[9px] text-slate-400 font-bold">Tickets Únicos</span>
           </div>
-          <div className="text-[8.5px] text-slate-500 mt-2 font-sans leading-relaxed border-t border-white/5 pt-2 flex justify-between items-center">
-            <span>Devolvida CD = Sim | Status = Vazio, Prog. ou Rot.</span>
-            <ClipboardList className="w-3.5 h-3.5 text-rose-500/60" />
-          </div>
         </div>
 
         {/* Card 2: Aguardando Programação */}
-        <div className="bg-[#05070e]/80 hover:bg-[#070b16]/90 border border-amber-500/15 rounded-2xl p-5 flex flex-col justify-between shadow-lg transition duration-200 relative overflow-hidden group min-h-[120px] tech-border">
+        <div className="bg-[#05070e]/80 hover:bg-[#070b16]/90 border border-amber-500/15 rounded-2xl p-5 flex flex-col justify-between shadow-lg transition duration-200 relative overflow-hidden group min-h-[100px] tech-border">
           <div className="flex items-center justify-between">
             <span className="text-[9px] font-black text-amber-400 uppercase tracking-widest font-sans flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
@@ -1599,14 +1682,10 @@ export default function ReentregaDashboard() {
             </span>
             <span className="text-[9px] text-slate-400 font-bold">Tickets Únicos</span>
           </div>
-          <div className="text-[8.5px] text-slate-500 mt-2 font-sans leading-relaxed border-t border-white/5 pt-2 flex justify-between items-center">
-            <span>Status Final = Aguardando Programação</span>
-            <Clock className="w-3.5 h-3.5 text-amber-500/60" />
-          </div>
         </div>
 
         {/* Card 3: Mercadorias Expedidas */}
-        <div className="bg-[#05070e]/80 hover:bg-[#070b16]/90 border border-blue-500/15 rounded-2xl p-5 flex flex-col justify-between shadow-lg transition duration-200 relative overflow-hidden group min-h-[120px] tech-border">
+        <div className="bg-[#05070e]/80 hover:bg-[#070b16]/90 border border-blue-500/15 rounded-2xl p-5 flex flex-col justify-between shadow-lg transition duration-200 relative overflow-hidden group min-h-[100px] tech-border">
           <div className="flex items-center justify-between">
             <span className="text-[9px] font-black text-blue-400 uppercase tracking-widest font-sans flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
@@ -1618,10 +1697,6 @@ export default function ReentregaDashboard() {
               {mercadoriasExpedidasCount}
             </span>
             <span className="text-[9px] text-slate-400 font-bold">Tickets Únicos</span>
-          </div>
-          <div className="text-[8.5px] text-slate-500 mt-2 font-sans leading-relaxed border-t border-white/5 pt-2 flex justify-between items-center">
-            <span>Total expedido nos últimos 30 dias</span>
-            <Truck className="w-3.5 h-3.5 text-blue-500/60" />
           </div>
         </div>
       </div>
@@ -1637,36 +1712,50 @@ export default function ReentregaDashboard() {
             </h3>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 gap-3 h-full">
-            {/* STEP 1: REENTREGAS NÃO VOLTARAM AO CD */}
-            <div className="bg-[#05070e] border border-white/5 p-5 rounded-xl flex flex-col justify-between hover:border-indigo-500/20 transition-colors">
+          <div className="flex flex-col gap-3 h-full">
+            {/* NEW TOP CARD: VALOR TOTAL DE TODAS AS NOTAS PENDENTES NO CD */}
+            <div className="bg-emerald-500/5 border border-emerald-500/15 p-4 rounded-xl flex items-center justify-between hover:border-emerald-500/30 transition-colors">
+              <div className="flex flex-col">
+                <span className="text-[8px] font-black text-emerald-400 uppercase tracking-widest font-sans flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  Valor Total Pendente no CD
+                </span>
+                <span className="text-xl sm:text-2xl font-black text-white tracking-tight font-mono mt-1">
+                  {formatBRL(valorTotalPendenteCD)}
+                </span>
+              </div>
+              <div className="p-2.5 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-lg shadow-[0_0_10px_rgba(16,185,129,0.1)]">
+                <DollarSign className="w-5 h-5" />
+              </div>
+            </div>
+
+            {/* STEP 1: REENTREGAS NÃO VOLTARAM AO CD (SHRUNK) */}
+            <div className="bg-[#05070e] border border-white/5 p-3.5 rounded-xl flex flex-col justify-between hover:border-indigo-500/20 transition-colors">
               <div className="flex items-start justify-between gap-2">
-                <span className="text-[10px] font-black text-slate-400 tracking-wider uppercase leading-tight">REENTREGAS NÃO VOLTARAM AO CD</span>
-                <span className="text-xs bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 font-sans font-black px-2.5 py-1 rounded leading-none">
+                <span className="text-[9px] font-black text-slate-400 tracking-wider uppercase leading-tight">REENTREGAS NÃO VOLTARAM AO CD</span>
+                <span className="text-[10px] bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 font-sans font-black px-2 py-0.5 rounded leading-none">
                   [{flowCounts.retorno}]
                 </span>
               </div>
               <div>
-                <div className="h-1 w-full bg-indigo-500/20 rounded mt-4 overflow-hidden">
+                <div className="h-1 w-full bg-indigo-500/20 rounded mt-2.5 overflow-hidden">
                   <div className="h-full bg-indigo-500" style={{ width: '100%' }} />
                 </div>
-                <span className="text-[9px] text-slate-500 mt-2 block font-sans leading-tight">Mês atual - "Não reentrega" na Coluna AA</span>
               </div>
             </div>
 
-            {/* STEP 2: REENTREGAS QUE VOLTARAM AO CD */}
-            <div className="bg-[#05070e] border border-white/5 p-5 rounded-xl flex flex-col justify-between hover:border-yellow-500/20 transition-colors">
+            {/* STEP 2: REENTREGAS QUE VOLTARAM AO CD (SHRUNK) */}
+            <div className="bg-[#05070e] border border-white/5 p-3.5 rounded-xl flex flex-col justify-between hover:border-yellow-500/20 transition-colors">
               <div className="flex items-start justify-between gap-2">
-                <span className="text-[10px] font-black text-slate-400 tracking-wider uppercase leading-tight">REENTREGAS QUE VOLTARAM AO CD</span>
-                <span className="text-xs bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 font-sans font-black px-2.5 py-1 rounded leading-none">
+                <span className="text-[9px] font-black text-slate-400 tracking-wider uppercase leading-tight">REENTREGAS QUE VOLTARAM AO CD</span>
+                <span className="text-[10px] bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 font-sans font-black px-2 py-0.5 rounded leading-none">
                   [{flowCounts.triagem}]
                 </span>
               </div>
               <div>
-                <div className="h-1 w-full bg-yellow-500/20 rounded mt-4 overflow-hidden">
+                <div className="h-1 w-full bg-yellow-500/20 rounded mt-2.5 overflow-hidden">
                   <div className="h-full bg-yellow-500" style={{ width: '100%' }} />
                 </div>
-                <span className="text-[9px] text-slate-500 mt-2 block font-sans leading-tight">Mês atual - "Sim" na Coluna U</span>
               </div>
             </div>
           </div>
@@ -1710,8 +1799,8 @@ export default function ReentregaDashboard() {
                   statusColorClasses = "text-rose-400 bg-rose-500/5 border border-rose-500/10";
                   statusIcon = <AlertCircle className="w-3 h-3 text-rose-400" />;
                 } else if (group.status === 'Expedido') {
-                  statusColorClasses = "text-blue-400 bg-blue-500/5 border border-blue-500/10";
-                  statusIcon = <Truck className="w-3 h-3 text-blue-400" />;
+                  statusColorClasses = "text-amber-400 bg-amber-500/5 border border-amber-500/10";
+                  statusIcon = <Clock className="w-3 h-3 text-amber-400" />;
                 }
 
                 return (
@@ -1744,7 +1833,7 @@ export default function ReentregaDashboard() {
                           statusColorClasses
                         )}>
                           {statusIcon}
-                          {group.status}
+                          {group.status === 'Expedido' ? 'Aguardando Programação' : group.status}
                         </div>
                       </div>
 
@@ -1797,10 +1886,14 @@ export default function ReentregaDashboard() {
                                         </p>
                                       </div>
                                     )}
-                                    <div className="grid grid-cols-2 gap-2 border-t border-white/5 pt-1.5 mt-0.5">
+                                    <div className="grid grid-cols-3 gap-2 border-t border-white/5 pt-1.5 mt-0.5">
                                       <div>
                                         <span className="text-[7px] font-black text-slate-500 uppercase tracking-widest">Motorista</span>
                                         <p className="text-white font-bold uppercase truncate">{item.motorista || 'N/I'}</p>
+                                      </div>
+                                      <div>
+                                        <span className="text-[7px] font-black text-slate-500 uppercase tracking-widest">Nota Fiscal</span>
+                                        <p className="text-indigo-300 font-mono font-bold">{item.nf || 'S/NF'}</p>
                                       </div>
                                       <div>
                                         <span className="text-[7px] font-black text-slate-500 uppercase tracking-widest">Valor</span>
@@ -2254,13 +2347,39 @@ export default function ReentregaDashboard() {
                   
                   // Status expedição Reentrega style conditions
                   let statusExpStyle = 'text-slate-400 bg-slate-500/10 border-slate-500/20';
-                  const expStatus = (item.statusExpedicao || 'Aguardando Programação').trim();
+                  let expStatus = (item.statusExpedicao || 'Aguardando Expedição').trim();
                   if (expStatus === 'Aguardando Programação') {
+                    expStatus = 'Aguardando Expedição';
+                  }
+                  
+                  // Check if the status is "Expedido" but is now D+1 (at least 1 day has passed since expedition)
+                  let isDelayedD1 = false;
+                  if (expStatus.toLowerCase() === 'expedido' && item.dataExpedicao) {
+                    const parsedExp = parseFlexibleDate(item.dataExpedicao);
+                    if (parsedExp) {
+                      const today = new Date();
+                      const dToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+                      const dExp = new Date(parsedExp.getFullYear(), parsedExp.getMonth(), parsedExp.getDate());
+                      const diffTime = dToday.getTime() - dExp.getTime();
+                      const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+                      if (diffDays >= 1) {
+                        isDelayedD1 = true;
+                      }
+                    }
+                  }
+
+                  if (isDelayedD1) {
+                    expStatus = 'Em Atraso';
+                  }
+
+                  if (expStatus === 'Aguardando Expedição') {
                     statusExpStyle = 'text-amber-400 bg-amber-450/10 border-amber-500/20';
                   } else if (expStatus === 'Expedido') {
                     statusExpStyle = 'text-blue-400 bg-blue-400/10 border-blue-500/20';
                   } else if (expStatus === 'Entregue') {
                     statusExpStyle = 'text-emerald-400 bg-emerald-400/10 border-emerald-500/20';
+                  } else if (expStatus === 'Em Atraso' || expStatus === 'Atrasado') {
+                    statusExpStyle = 'text-rose-400 bg-rose-450/10 border-rose-500/20';
                   }
 
                   return (
@@ -2307,7 +2426,8 @@ export default function ReentregaDashboard() {
                             <span>
                               {expStatus === 'Entregue' && '🟢'}
                               {expStatus === 'Expedido' && '🔵'}
-                              {expStatus === 'Aguardando Programação' && '🟡'}
+                              {expStatus === 'Aguardando Expedição' && '🟡'}
+                              {(expStatus === 'Em Atraso' || expStatus === 'Atrasado') && '🔴'}
                             </span>
                             {expStatus}
                           </span>
@@ -2746,7 +2866,7 @@ export default function ReentregaDashboard() {
                       onChange={(e) => setFormStatusExpedicao(e.target.value)}
                       className="bg-[#040814] text-slate-300 border border-white/5 rounded-xl p-2 font-bold focus:border-emerald-500/30 focus:outline-none cursor-pointer"
                     >
-                      <option value="Aguardando Programação">Aguardando Programação</option>
+                      <option value="Aguardando Expedição">Aguardando Expedição</option>
                       <option value="Expedido">Expedido</option>
                       <option value="Entregue">Entregue</option>
                     </select>
