@@ -4337,7 +4337,7 @@ export default function App() {
                             return `${timeOnly[0].padStart(2, '0')}:${timeOnly[1].padStart(2, '0')}`;
                           })()}
                         </td>
-                        <td className="px-3 py-[1px] text-center font-black text-blue-400 font-mono text-[9px] italic">
+                        <td className="px-3 py-[1px] text-center font-black text-blue-400 font-mono text-[9px] italic whitespace-nowrap">
                           {(() => {
                             // Tempo de Conferência: Fim (W) - Início (V)
                             const start = extra?.inicio || item.inicioConferencia;
@@ -4345,7 +4345,7 @@ export default function App() {
                             return calculateTimeDiff(start, end);
                           })()}
                         </td>
-                        <td className="px-3 py-[1px] text-center font-black text-emerald-400 font-mono text-[9px] italic">
+                        <td className="px-3 py-[1px] text-center font-black text-emerald-400 font-mono text-[9px] italic whitespace-nowrap">
                           {(() => {
                             // Tempo Total: Da Chegada (G) até Alocação (Y)
                             const arrival = extra?.chegada || item.chegadaDoca;
